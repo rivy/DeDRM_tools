@@ -6,7 +6,7 @@ __license__   = 'GPL v3'
 __docformat__ = 'restructuredtext en'
 
 
-import os, zipfile
+import os, traceback, zipfile
 
 try:
     from PyQt5.Qt import QToolButton, QUrl
@@ -78,8 +78,30 @@ class InterfacePluginAction(InterfaceAction):
         self.current_idx = self.gui.library_view.currentIndex()
 
         print ('Running {}'.format(PLUGIN_NAME + ' v' + PLUGIN_VERSION))
+        #
+        # search for connected device in case serials are saved
+        tmpserials = cfg['kobo_serials']
+        device_path = None
+        try:
+            device = self.parent().device_manager.connected_device
+            if (device):
+                device_path = device._main_prefix
+                debug_print("get_device_settings - device_path=", device_path)
+            else:
+                debug_print("didn't find device")
+        except:
+            debug_print("Exception getting device path. Probably not an E-Ink Kobo device")
+
         # Get the Kobo Library object (obok v3.01)
-        self.library = KoboLibrary()
+        self.library = KoboLibrary(tmpserials, device_path)
+        debug_print ("got kobodir %s" % self.library.kobodir)
+        if (self.library.kobodir == ''):
+            # linux and no device connected, but could be extended
+            # to the case where on Windows/Mac the prog is not installed
+            msg = _('<p>Could not find Kobo Library\n<p>Windows/Mac: do you have Kobo Desktop installed?\n<p>Windows/Mac/Linux: In case you have an Kobo eInk device, connect the device.')
+            showErrorDlg(msg, None)
+            return
+
 
         # Get a list of Kobo titles
         books = self.build_book_list()
@@ -98,6 +120,7 @@ class InterfacePluginAction(InterfaceAction):
             candidate_keys = self.library.userkeys
         except:
             print (_('Trouble retrieving keys with newer obok method.'))
+            traceback.print_exc()
         else:
             if len(candidate_keys):
                 self.userkeys.extend(candidate_keys)

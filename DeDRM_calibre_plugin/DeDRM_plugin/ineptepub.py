@@ -3,18 +3,19 @@
 
 from __future__ import with_statement
 
-# ineptepub.pyw, version 6.1
+# ineptepub.pyw, version 6.5
 # Copyright © 2009-2010 by i♥cabbages
 
 # Released under the terms of the GNU General Public Licence, version 3
 # <http://www.gnu.org/licenses/>
 
 # Modified 2010–2013 by some_updates, DiapDealer and Apprentice Alf
+# Modified 2015–2016 by Apprentice Harper
 
-# Windows users: Before running this program, you must first install Python 2.6
+# Windows users: Before running this program, you must first install Python 2.7
 #   from <http://www.python.org/download/> and PyCrypto from
 #   <http://www.voidspace.org.uk/python/modules.shtml#pycrypto> (make sure to
-#   install the version for Python 2.6).  Save this script file as
+#   install the version for Python 2.7).  Save this script file as
 #   ineptepub.pyw and double-click on it to run it.
 #
 # Mac OS X users: Save this script file as ineptepub.pyw.  You can run this
@@ -38,13 +39,16 @@ from __future__ import with_statement
 #   6.0 - moved unicode_argv call inside main for Windows DeDRM compatibility
 #   6.1 - Work if TkInter is missing
 #   6.2 - Handle UTF-8 file names inside an ePub, fix by Jose Luis
+#   6.3 - Add additional check on DER file sanity
+#   6.4 - Remove erroneous check on DER file sanity
+#   6.5 - Completely remove erroneous check on DER file sanity
 
 """
 Decrypt Adobe Digital Editions encrypted ePub books.
 """
 
 __license__ = 'GPL v3'
-__version__ = "6.2"
+__version__ = "6.5"
 
 import sys
 import os

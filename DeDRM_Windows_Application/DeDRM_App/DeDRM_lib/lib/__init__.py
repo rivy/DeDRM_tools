@@ -9,8 +9,6 @@ __docformat__ = 'restructuredtext en'
 # Released under the terms of the GNU General Public Licence, version 3
 # <http://www.gnu.org/licenses/>
 #
-# Requires Calibre version 0.7.55 or higher.
-#
 # All credit given to i♥cabbages and The Dark Reverser for the original standalone scripts.
 # We had the much easier job of converting them to a calibre plugin.
 #
@@ -39,14 +37,25 @@ __docformat__ = 'restructuredtext en'
 #   6.1.0 - Fixed multiple books import problem and PDF import with no key problem
 #   6.2.0 - Support for getting B&N key from nook Study log. Fix for UTF-8 filenames in Adobe ePubs.
 #           Fix for not copying needed files. Fix for getting default Adobe key for PDFs
+#   6.2.1 - Fix for non-ascii Windows user names
+#   6.2.2 - Added URL method for B&N/nook books
 #   6.3.0 - Added in Kindle for Android serial number solution
+#   6.3.1 - Version number bump for clarity
+#   6.3.2 - Fixed Kindle for Android help file
+#   6.3.3 - Bug fix for Kindle for PC support
+#   6.3.4 - Fixes for Kindle for Android, Linux, and Kobo 3.17
+#   6.3.5 - Fixes for Linux, and Kobo 3.19 and more logging
+#   6.3.6 - Fixes for ADE ePub and PDF introduced in 6.3.5
+#   6.4.0 - Updated for new Kindle for PC encryption
+#   6.4.1 - Fix for some new tags in Topaz ebooks.
+
 
 """
 Decrypt DRMed ebooks.
 """
 
 PLUGIN_NAME = u"DeDRM"
-PLUGIN_VERSION_TUPLE = (6, 3, 0)
+PLUGIN_VERSION_TUPLE = (6, 4, 1)
 PLUGIN_VERSION = u".".join([unicode(str(x)) for x in PLUGIN_VERSION_TUPLE])
 # Include an html helpfile in the plugin's zipfile with the following name.
 RESOURCE_NAME = PLUGIN_NAME + '_Help.htm'
@@ -87,10 +96,10 @@ class DeDRM(FileTypePlugin):
     name                    = PLUGIN_NAME
     description             = u"Removes DRM from Amazon Kindle, Adobe Adept (including Kobo), Barnes & Noble, Mobipocket and eReader ebooks. Credit given to i♥cabbages and The Dark Reverser for the original stand-alone scripts."
     supported_platforms     = ['linux', 'osx', 'windows']
-    author                  = u"DiapDealer, Apprentice Alf, The Dark Reverser and i♥cabbages"
+    author                  = u"Apprentice Alf, Aprentice Harper, The Dark Reverser and i♥cabbages"
     version                 = PLUGIN_VERSION_TUPLE
-    minimum_calibre_version = (0, 7, 55)  # Compiled python libraries cannot be imported in earlier versions.
-    file_types              = set(['epub','pdf','pdb','prc','mobi','azw','azw1','azw3','azw4','tpz'])
+    minimum_calibre_version = (1, 0, 0)  # Compiled python libraries cannot be imported in earlier versions.
+    file_types              = set(['epub','pdf','pdb','prc','mobi','pobi','azw','azw1','azw3','azw4','tpz'])
     on_import               = True
     priority                = 600
 
@@ -142,7 +151,7 @@ class DeDRM(FileTypePlugin):
                     try:
                         open(file_path,'wb').write(data)
                     except:
-                        print u"{0} v{1}: Exception when copying needed library files after {2:.1f} seconds".format(PLUGIN_NAME, PLUGIN_VERSION, time.time()-self.starttime)
+                        print u"{0} v{1}: Exception when copying needed library files".format(PLUGIN_NAME, PLUGIN_VERSION)
                         traceback.print_exc()
                         pass
 
@@ -253,7 +262,7 @@ class DeDRM(FileTypePlugin):
                             # Store the new successful key in the defaults
                             print u"{0} v{1}: Saving a new default key".format(PLUGIN_NAME, PLUGIN_VERSION)
                             try:
-                                dedrmprefs.addnamedvaluetoprefs('bandnkeys','default_key',keyvalue)
+                                dedrmprefs.addnamedvaluetoprefs('bandnkeys','nook_Study_key',keyvalue)
                                 dedrmprefs.writeprefs()
                                 print u"{0} v{1}: Saved a new default key after {2:.1f} seconds".format(PLUGIN_NAME, PLUGIN_VERSION,time.time()-self.starttime)
                             except:
@@ -289,11 +298,15 @@ class DeDRM(FileTypePlugin):
                     traceback.print_exc()
                     result = 1
 
-                of.close()
+                try:
+                    of.close()
+                except:
+                    print u"{0} v{1}: Exception closing temporary file after {2:.1f} seconds. Ignored.".format(PLUGIN_NAME, PLUGIN_VERSION, time.time()-self.starttime)
 
                 if  result == 0:
                     # Decryption was successful.
                     # Return the modified PersistentTemporary file to calibre.
+                    print u"{0} v{1}: Decrypted with key {2:s} after {3:.1f} seconds".format(PLUGIN_NAME, PLUGIN_VERSION,keyname,time.time()-self.starttime)
                     return of.name
 
                 print u"{0} v{1}: Failed to decrypt with key {2:s} after {3:.1f} seconds".format(PLUGIN_NAME, PLUGIN_VERSION,keyname,time.time()-self.starttime)
@@ -353,6 +366,7 @@ class DeDRM(FileTypePlugin):
                             except:
                                 print u"{0} v{1}: Exception when saving a new default key after {2:.1f} seconds".format(PLUGIN_NAME, PLUGIN_VERSION, time.time()-self.starttime)
                                 traceback.print_exc()
+                            print u"{0} v{1}: Decrypted with new default key after {3:.1f} seconds".format(PLUGIN_NAME, PLUGIN_VERSION,time.time()-self.starttime)
                             # Return the modified PersistentTemporary file to calibre.
                             return of.name
 
@@ -479,11 +493,15 @@ class DeDRM(FileTypePlugin):
         dedrmprefs = prefs.DeDRM_Prefs()
         pids = dedrmprefs['pids']
         serials = dedrmprefs['serials']
-        serials.extend(dedrmprefs['androidserials'])
+        for android_serials_list in dedrmprefs['androidkeys'].values():
+            #print android_serials_list
+            serials.extend(android_serials_list)
+        #print serials
+        androidFiles = []
         kindleDatabases = dedrmprefs['kindlekeys'].items()
 
         try:
-            book = k4mobidedrm.GetDecryptedBook(path_to_ebook,kindleDatabases,serials,pids,self.starttime)
+            book = k4mobidedrm.GetDecryptedBook(path_to_ebook,kindleDatabases,androidFiles,serials,pids,self.starttime)
         except Exception, e:
             decoded = False
             # perhaps we need to get a new default Kindle for Mac/PC key
@@ -514,7 +532,7 @@ class DeDRM(FileTypePlugin):
             if len(newkeys) > 0:
                 print u"{0} v{1}: Found {2} new {3}".format(PLUGIN_NAME, PLUGIN_VERSION, len(newkeys), u"key" if len(newkeys)==1 else u"keys")
                 try:
-                    book = k4mobidedrm.GetDecryptedBook(path_to_ebook,newkeys.items(),[],[],self.starttime)
+                    book = k4mobidedrm.GetDecryptedBook(path_to_ebook,newkeys.items(),[],[],[],self.starttime)
                     decoded = True
                     # store the new successful keys in the defaults
                     print u"{0} v{1}: Saving {2} new {3}".format(PLUGIN_NAME, PLUGIN_VERSION, len(newkeys), u"key" if len(newkeys)==1 else u"keys")
@@ -555,6 +573,7 @@ class DeDRM(FileTypePlugin):
             # Decryption was successful return the modified PersistentTemporary
             # file to Calibre's import process.
             if  result == 0:
+                print u"{0} v{1}: Successfully decrypted with key {2:s} after {3:.1f} seconds".format(PLUGIN_NAME, PLUGIN_VERSION,keyname_masked,time.time()-self.starttime)
                 return of.name
 
             print u"{0} v{1}: Failed to decrypt with key {2:s} after {3:.1f} seconds".format(PLUGIN_NAME, PLUGIN_VERSION,keyname_masked,time.time()-self.starttime)
@@ -573,7 +592,7 @@ class DeDRM(FileTypePlugin):
         self.starttime = time.time()
 
         booktype = os.path.splitext(path_to_ebook)[1].lower()[1:]
-        if booktype in ['prc','mobi','azw','azw1','azw3','azw4','tpz']:
+        if booktype in ['prc','mobi','pobi','azw','azw1','azw3','azw4','tpz']:
             # Kindle/Mobipocket
             decrypted_ebook = self.KindleMobiDecrypt(path_to_ebook)
         elif booktype == 'pdb':
@@ -590,7 +609,7 @@ class DeDRM(FileTypePlugin):
         else:
             print u"Unknown booktype {0}. Passing back to calibre unchanged".format(booktype)
             return path_to_ebook
-        print u"{0} v{1}: Successfully decrypted book after {2:.1f} seconds".format(PLUGIN_NAME, PLUGIN_VERSION,time.time()-self.starttime)
+        print u"{0} v{1}: Finished after {2:.1f} seconds".format(PLUGIN_NAME, PLUGIN_VERSION,time.time()-self.starttime)
         return decrypted_ebook
 
     def is_customizable(self):

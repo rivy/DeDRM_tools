@@ -4,27 +4,30 @@
 from __future__ import with_statement
 
 # androidkindlekey.py
-# Copyright © 2013-15 by Thom
-# Some portions Copyright © 2011-15 by Apprentice Alf and Apprentice Harper
+# Copyright © 2013-15 by Thom and Apprentice Harper
+# Some portions Copyright © 2010-15 by some_updates and Apprentice Alf
 #
 
 # Revision history:
-#  1.0   - Android serial number extracted from AmazonSecureStorage.xml
-#  1.1   - Fixes and enhancements of some kind
+#  1.0   - AmazonSecureStorage.xml decryption to serial number
+#  1.1   - map_data_storage.db decryption to serial number
 #  1.2   - Changed to be callable from AppleScript by returning only serial number
 #        - and changed name to androidkindlekey.py
 #        - and added in unicode command line support
-
+#  1.3   - added in TkInter interface, output to a file
+#  1.4   - Fix some problems identified by Aldo Bleeker
+#  1.5   - Fix another problem identified by Aldo Bleeker
 
 """
 Retrieve Kindle for Android Serial Number.
 """
 
 __license__ = 'GPL v3'
-__version__ = '1.2'
+__version__ = '1.5'
 
 import os
 import sys
+import traceback
 import getopt
 import tempfile
 import zlib
@@ -199,13 +202,16 @@ def get_serials1(path=STORAGE1):
         return []
 
     serials = []
+    if dsnid:
+        serials.append(dsnid)
     for token in tokens:
         if token:
             serials.append('%s%s' % (dsnid, token))
+            serials.append(token)
     return serials
 
 def get_serials2(path=STORAGE2):
-    ''' get serials from android's shared preference xml '''
+    ''' get serials from android's sql database '''
     if not os.path.isfile(path):
         return []
 
@@ -213,14 +219,42 @@ def get_serials2(path=STORAGE2):
     connection = sqlite3.connect(path)
     cursor = connection.cursor()
     cursor.execute('''select userdata_value from userdata where userdata_key like '%/%token.device.deviceserialname%' ''')
-    dsns = [x[0].encode('utf8') for x in cursor.fetchall()]
+    userdata_keys = cursor.fetchall()
+    dsns = []
+    for userdata_row in userdata_keys:
+        try:
+            if userdata_row and userdata_row[0]:
+                userdata_utf8 = userdata_row[0].encode('utf8')
+                if len(userdata_utf8) > 0:
+                    dsns.append(userdata_utf8)
+        except:
+            print "Error getting one of the device serial name keys"
+            traceback.print_exc()
+            pass
+    dsns = list(set(dsns))
 
     cursor.execute('''select userdata_value from userdata where userdata_key like '%/%kindle.account.tokens%' ''')
-    tokens = [x[0].encode('utf8') for x in cursor.fetchall()]
+    userdata_keys = cursor.fetchall()
+    tokens = []
+    for userdata_row in userdata_keys:
+        try:
+            if userdata_row and userdata_row[0]:
+                userdata_utf8 = userdata_row[0].encode('utf8')
+                if len(userdata_utf8) > 0:
+                    tokens.append(userdata_utf8)
+        except:
+            print "Error getting one of the account token keys"
+            traceback.print_exc()
+            pass
+    tokens = list(set(tokens))
+ 
     serials = []
     for x in dsns:
+        serials.append(x)
         for y in tokens:
             serials.append('%s%s' % (x, y))
+    for y in tokens:
+        serials.append(y)
     return serials
 
 def get_serials(path=STORAGE):
@@ -269,21 +303,31 @@ def get_serials(path=STORAGE):
             write_path = os.path.abspath(write.name)
             serials.extend(get_serials2(write_path))
             os.remove(write_path)
+    return list(set(serials))
 
-    return serials
+__all__ = [ 'get_serials', 'getkey']
 
-__all__ = [ 'get_serials' ]
+# procedure for CLI and GUI interfaces
+# returns single or multiple keys (one per line) in the specified file
+def getkey(outfile, inpath):
+    keys = get_serials(inpath)
+    if len(keys) > 0:
+        with file(outfile, 'w') as keyfileout:
+            for key in keys:
+                keyfileout.write(key)
+                keyfileout.write("\n")
+        return True
+    return False
+
 
 def usage(progname):
-    print u"{0} v{1}\nCopyright © 2013-2015 Thom and Apprentice Harper".format(progname,__version__)
-    print u"Decrypts the serial number of Kindle For Android from Android backup or file"
+    print u"Decrypts the serial number(s) of Kindle For Android from Android backup or file"
     print u"Get backup.ab file using adb backup com.amazon.kindle for Android 4.0+."
     print u"Otherwise extract AmazonSecureStorage.xml from /data/data/com.amazon.kindle/shared_prefs/AmazonSecureStorage.xml"
     print u"Or map_data_storage.db from /data/data/com.amazon.kindle/databases/map_data_storage.db"
     print u""
-    print u"Serial number is written to standard output."
     print u"Usage:"
-    print u"    {0:s} [-h]  <inputfile>".format(progname)
+    print u"    {0:s} [-h] [-b <backup.ab>] [<outfile.k4a>]".format(progname)
 
 
 def cli_main():
@@ -291,47 +335,134 @@ def cli_main():
     sys.stderr=SafeUnbuffered(sys.stderr)
     argv=unicode_argv()
     progname = os.path.basename(argv[0])
+    print u"{0} v{1}\nCopyright © 2010-2015 Thom, some_updates, Apprentice Alf and Apprentice Harper".format(progname,__version__)
 
     try:
-        opts, args = getopt.getopt(argv[1:], "h")
+        opts, args = getopt.getopt(argv[1:], "hb:")
     except getopt.GetoptError, err:
         usage(progname)
         print u"\nError in options or arguments: {0}".format(err.args[0])
         return 2
 
-    files = []
+    inpath = ""
     for o, a in opts:
         if o == "-h":
             usage(progname)
             return 0
+        if o == "-b":
+            inpath = a
 
     if len(args) > 1:
         usage(progname)
         return 2
 
-    inpath = args[0]
-    if not os.path.isabs(inpath):
-        inpath = os.path.abspath(inpath)
+    if len(args) == 1:
+        # save to the specified file or directory
+        outfile = args[0]
+        if not os.path.isabs(outfile):
+           outfile = os.path.join(os.path.dirname(argv[0]),outfile)
+           outfile = os.path.abspath(outfile)
+        if os.path.isdir(outfile):
+           outfile = os.path.join(os.path.dirname(argv[0]),"androidkindlekey.k4a")
+    else:
+        # save to the same directory as the script
+        outfile = os.path.join(os.path.dirname(argv[0]),"androidkindlekey.k4a")
 
-    inpath = os.path.realpath(os.path.normpath(inpath))
+    # make sure the outpath is OK
+    outfile = os.path.realpath(os.path.normpath(outfile))
 
     if not os.path.isfile(inpath):
         usage(progname)
         print u"\n{0:s} file not found".format(inpath)
         return 2
 
-    serials = get_serials(inpath)
+    if getkey(outfile, inpath):
+        print u"\nSaved Kindle for Android key to {0}".format(outfile)
+    else:
+        print u"\nCould not retrieve Kindle for Android key."
+    return 0
 
-    if len(serials) == 0:
-        print u"No keys found in {0:s}".format(inpath)
-        return 2
 
-    for serial in serials:
-        print serial
+def gui_main():
+    try:
+        import Tkinter
+        import Tkconstants
+        import tkMessageBox
+        import tkFileDialog
+    except:
+        print "Tkinter not installed"
+        return cli_main()
+
+    class DecryptionDialog(Tkinter.Frame):
+        def __init__(self, root):
+            Tkinter.Frame.__init__(self, root, border=5)
+            self.status = Tkinter.Label(self, text=u"Select backup.ab file")
+            self.status.pack(fill=Tkconstants.X, expand=1)
+            body = Tkinter.Frame(self)
+            body.pack(fill=Tkconstants.X, expand=1)
+            sticky = Tkconstants.E + Tkconstants.W
+            body.grid_columnconfigure(1, weight=2)
+            Tkinter.Label(body, text=u"Backup file").grid(row=0, column=0)
+            self.keypath = Tkinter.Entry(body, width=40)
+            self.keypath.grid(row=0, column=1, sticky=sticky)
+            self.keypath.insert(2, u"backup.ab")
+            button = Tkinter.Button(body, text=u"...", command=self.get_keypath)
+            button.grid(row=0, column=2)
+            buttons = Tkinter.Frame(self)
+            buttons.pack()
+            button2 = Tkinter.Button(
+                buttons, text=u"Extract", width=10, command=self.generate)
+            button2.pack(side=Tkconstants.LEFT)
+            Tkinter.Frame(buttons, width=10).pack(side=Tkconstants.LEFT)
+            button3 = Tkinter.Button(
+                buttons, text=u"Quit", width=10, command=self.quit)
+            button3.pack(side=Tkconstants.RIGHT)
+
+        def get_keypath(self):
+            keypath = tkFileDialog.askopenfilename(
+                parent=None, title=u"Select backup.ab file",
+                defaultextension=u".ab",
+                filetypes=[('adb backup com.amazon.kindle', '.ab'),
+                           ('All Files', '.*')])
+            if keypath:
+                keypath = os.path.normpath(keypath)
+                self.keypath.delete(0, Tkconstants.END)
+                self.keypath.insert(0, keypath)
+            return
+
+        def generate(self):
+            inpath = self.keypath.get()
+            self.status['text'] = u"Getting key..."
+            try:
+                keys = get_serials(inpath)
+                keycount = 0
+                for key in keys:
+                    while True:
+                        keycount += 1
+                        outfile = os.path.join(progpath,u"kindlekey{0:d}.k4a".format(keycount))
+                        if not os.path.exists(outfile):
+                            break
+
+                    with file(outfile, 'w') as keyfileout:
+                        keyfileout.write(key)
+                    success = True
+                    tkMessageBox.showinfo(progname, u"Key successfully retrieved to {0}".format(outfile))
+            except Exception, e:
+                self.status['text'] = u"Error: {0}".format(e.args[0])
+                return
+            self.status['text'] = u"Select backup.ab file"
+
+    argv=unicode_argv()
+    progpath, progname = os.path.split(argv[0])
+    root = Tkinter.Tk()
+    root.title(u"Kindle for Android Key Extraction v.{0}".format(__version__))
+    root.resizable(True, False)
+    root.minsize(300, 0)
+    DecryptionDialog(root).pack(fill=Tkconstants.X, expand=1)
+    root.mainloop()
     return 0
 
 if __name__ == '__main__':
     if len(sys.argv) > 1:
         sys.exit(cli_main())
-    usage(os.path.basename(unicode_argv()[0]))
-    sys.exit(0);
+    sys.exit(gui_main())

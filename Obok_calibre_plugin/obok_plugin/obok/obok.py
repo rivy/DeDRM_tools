@@ -1,6 +1,33 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+# Version 3.2.0 January 2016
+# Update for latest version of Windows Desktop app.
+# Support Kobo devices in the command line version.
+#
+# Version 3.1.9 November 2015
+# Handle Kobo Desktop under wine on Linux
+#
+# Version 3.1.8 November 2015
+# Handle the case of Kobo Arc or Vox device (i.e. don't crash).
+#
+# Version 3.1.7 October 2015
+# Handle the case of no device or database more gracefully.
+#
+# Version 3.1.6 September 2015
+# Enable support for Kobo devices
+# More character encoding fixes (unicode strings)
+#
+# Version 3.1.5 September 2015
+# Removed requirement that a purchase has been made.
+# Also add in character encoding fixes
+#
+# Version 3.1.4 September 2015
+# Updated for version 3.17 of the Windows Desktop app.
+#
+# Version 3.1.3 August 2015
+# Add translations for Portuguese and Arabic
+#
 # Version 3.1.2 January 2015
 # Add coding, version number and version announcement
 #
@@ -109,7 +136,8 @@
 #
 """Manage all Kobo books, either encrypted or DRM-free."""
 
-__version__ = '3.1.1'
+__version__ = '3.1.9'
+__about__ =  u"Obok v{0}\nCopyright © 2012-2015 Physisticated et al.".format(__version__)
 
 import sys
 import os
@@ -123,6 +151,18 @@ import hashlib
 import xml.etree.ElementTree as ET
 import string
 import shutil
+import argparse
+
+can_parse_xml = True
+try:
+  from xml.etree import ElementTree as ET
+  # print u"using xml.etree for xml parsing"
+except ImportError:
+  can_parse_xml = False
+  # print u"Cannot find xml.etree, disabling extraction of serial numbers"
+
+# List of all known hash keys
+KOBO_HASH_KEYS = ['88b3a2e13', 'XzUhGYdFp', 'NoCanLook']
 
 class ENCRYPTIONError(Exception):
     pass
@@ -209,6 +249,24 @@ def _load_crypto():
 
 AES = _load_crypto()
 
+# Wrap a stream so that output gets flushed immediately
+# and also make sure that any unicode strings get
+# encoded using "replace" before writing them.
+class SafeUnbuffered:
+    def __init__(self, stream):
+        self.stream = stream
+        self.encoding = stream.encoding
+        if self.encoding == None:
+            self.encoding = "utf-8"
+    def write(self, data):
+        if isinstance(data,unicode):
+            data = data.encode(self.encoding,"replace")
+        self.stream.write(data)
+        self.stream.flush()
+    def __getattr__(self, attr):
+        return getattr(self.stream, attr)
+
+
 class KoboLibrary(object):
     """The Kobo library.
 
@@ -216,23 +274,93 @@ class KoboLibrary(object):
     written by the Kobo Desktop Edition application, including the list
     of books, their titles, and the user's encryption key(s)."""
 
-    def __init__ (self):
-        print u"Obok v{0}\nCopyright © 2012-2014 Physisticated et al.".format(__version__)
-        if sys.platform.startswith('win'):
-            if sys.getwindowsversion().major > 5:
-                self.kobodir = os.environ['LOCALAPPDATA']
-            else:
-                self.kobodir = os.path.join(os.environ['USERPROFILE'], 'Local Settings', 'Application Data')
-            self.kobodir = os.path.join(self.kobodir, 'Kobo', 'Kobo Desktop Edition')
-        elif sys.platform.startswith('darwin'):
-            self.kobodir = os.path.join(os.environ['HOME'], 'Library', 'Application Support', 'Kobo', 'Kobo Desktop Edition')
-        self.bookdir = os.path.join(self.kobodir, 'kepub')
-        kobodb = os.path.join(self.kobodir, 'Kobo.sqlite')
-        self.__sqlite = sqlite3.connect(kobodb)
-        self.__cursor = self.__sqlite.cursor()
-        self._userkeys = []
-        self._books = []
-        self._volumeID = []
+    def __init__ (self, serials = [], device_path = None):
+        print __about__
+        self.kobodir = u""
+        kobodb = u""
+
+        # Order of checks
+        # 1. first check if a device_path has been passed in, and whether
+        #    we can find the sqlite db in the respective place
+        # 2. if 1., and we got some serials passed in (from saved
+        #    settings in calibre), just use it
+        # 3. if 1. worked, but we didn't get serials, try to parse them
+        #    from the device, if this didn't work, unset everything
+        # 4. if by now we don't have kobodir set, give up on device and
+        #    try to use the Desktop app.
+
+        # step 1. check whether this looks like a real device
+        if (device_path):
+            # we got a device path
+            self.kobodir = os.path.join(device_path, u".kobo")
+            # devices use KoboReader.sqlite
+            kobodb  = os.path.join(self.kobodir, u"KoboReader.sqlite")
+            if (not(os.path.isfile(kobodb))):
+                # device path seems to be wrong, unset it
+                device_path = u""
+                self.kobodir = u""
+                kobodb  = u""
+
+        if (self.kobodir):
+            # step 3. we found a device but didn't get serials, try to get them
+            if (len(serials) == 0):
+                # we got a device path but no saved serial
+                # try to get the serial from the device
+                # print u"get_device_settings - device_path = {0}".format(device_path)
+                # get serial from device_path/.adobe-digital-editions/device.xml
+                if can_parse_xml:
+                    devicexml = os.path.join(device_path, '.adobe-digital-editions', 'device.xml')
+                    # print u"trying to load {0}".format(devicexml)
+                    if (os.path.exists(devicexml)):
+                        # print u"trying to parse {0}".format(devicexml)
+                        xmltree = ET.parse(devicexml)
+                        for node in xmltree.iter():
+                            if "deviceSerial" in node.tag:
+                                serial = node.text
+                                # print u"found serial {0}".format(serial)
+                                serials.append(serial)
+                                break
+                    else:
+                        # print u"cannot get serials from device."
+                        device_path = u""
+                        self.kobodir = u""
+                        kobodb  = u""
+
+        if (self.kobodir == u""):
+            # step 4. we haven't found a device with serials, so try desktop apps
+            if sys.platform.startswith('win'):
+                import _winreg as winreg
+                if sys.getwindowsversion().major > 5:
+                    if 'LOCALAPPDATA' in os.environ.keys():
+                        # Python 2.x does not return unicode env. Use Python 3.x
+                        self.kobodir = winreg.ExpandEnvironmentStrings(u"%LOCALAPPDATA%")
+                if (self.kobodir == u""):
+                    if 'USERPROFILE' in os.environ.keys():
+                        # Python 2.x does not return unicode env. Use Python 3.x
+                        self.kobodir = os.path.join(winreg.ExpandEnvironmentStrings(u"%USERPROFILE%"), u"Local Settings", u"Application Data")
+                self.kobodir = os.path.join(self.kobodir, u"Kobo", u"Kobo Desktop Edition")
+            elif sys.platform.startswith('darwin'):
+                self.kobodir = os.path.join(os.environ['HOME'], u"Library", u"Application Support", u"Kobo", u"Kobo Desktop Edition")
+            elif linux_path != None:
+                # Probably Linux, let's get the wine prefix and path to Kobo.
+                self.kobodir = os.path.join(linux_path, u"Local Settings", u"Application Data", u"Kobo", u"Kobo Desktop Edition")
+            # desktop versions use Kobo.sqlite
+            kobodb = os.path.join(self.kobodir, u"Kobo.sqlite")
+            # check for existence of file
+            if (not(os.path.isfile(kobodb))):
+                # give up here, we haven't found anything useful
+                self.kobodir = u""
+                kobodb  = u""
+
+        
+        if (self.kobodir != u""):
+            self.bookdir = os.path.join(self.kobodir, u"kepub")
+            self.__sqlite = sqlite3.connect(kobodb)
+            self.__cursor = self.__sqlite.cursor()
+            self._userkeys = []
+            self._books = []
+            self._volumeID = []
+            self._serials = serials
 
     def close (self):
         """Closes the database used by the library."""
@@ -246,9 +374,8 @@ class KoboLibrary(object):
         """
         if len(self._userkeys) != 0:
             return self._userkeys
-        userid = self.__getuserid()
         for macaddr in self.__getmacaddrs():
-            self._userkeys.append(self.__getuserkey(macaddr, userid))
+            self._userkeys.extend(self.__getuserkeys(macaddr))
         return self._userkeys
 
     @property
@@ -274,7 +401,7 @@ class KoboLibrary(object):
 
     def __bookfile (self, volumeid):
         """The filename needed to open a given book."""
-        return os.path.join(self.kobodir, 'kepub', volumeid)
+        return os.path.join(self.kobodir, u"kepub", volumeid)
 
     def __getmacaddrs (self):
         """The list of all MAC addresses on this machine."""
@@ -290,17 +417,44 @@ class KoboLibrary(object):
             output = subprocess.check_output('/sbin/ifconfig -a', shell=True)
             matches = c.findall(output)
             for m in matches:
-                # print "m:",m[0]
+                # print u"m:{0}".format(m[0])
                 macaddrs.append(m[0].upper())
+        else:
+            # probably linux, let's try ipconfig under wine
+            c = re.compile('\s(' + '[0-9a-f]{2}-' * 5 + '[0-9a-f]{2})(\s|$)', re.IGNORECASE)
+            for line in os.popen('ipconfig /all'):
+                m = c.search(line)
+                if m:
+                    macaddrs.append(re.sub("-", ":", m.group(1)).upper())
+
+        # extend the list of macaddrs in any case with the serials
+        # cannot hurt ;-)
+        macaddrs.extend(self._serials)
+
         return macaddrs
 
-    def __getuserid (self):
-        return self.__cursor.execute('SELECT UserID FROM user WHERE HasMadePurchase = "true"').fetchone()[0]
-
-    def __getuserkey (self, macaddr, userid):
-        deviceid = hashlib.sha256('NoCanLook' + macaddr).hexdigest()
-        userkey = hashlib.sha256(deviceid + userid).hexdigest()
-        return binascii.a2b_hex(userkey[32:])
+    def __getuserids (self):
+        userids = []
+        cursor = self.__cursor.execute('SELECT UserID FROM user')
+        row = cursor.fetchone()
+        while row is not None:
+            try:
+                userid = row[0]
+                userids.append(userid)
+            except:
+                pass
+            row = cursor.fetchone()
+        return userids
+               
+    def __getuserkeys (self, macaddr):
+        userids = self.__getuserids()
+        userkeys = []
+        for hash in KOBO_HASH_KEYS:
+            deviceid = hashlib.sha256(hash + macaddr).hexdigest()
+            for userid in userids:
+                userkey = hashlib.sha256(deviceid + userid).hexdigest()
+                userkeys.append(binascii.a2b_hex(userkey[32:]))
+        return userkeys
 
 class KoboBook(object):
     """A Kobo book.
@@ -407,13 +561,13 @@ class KoboFile(object):
             if contents[:5]=="<?xml":
                 return True
             else:
-                print "Bad XML: ",contents[:5]
+                print u"Bad XML: {0}".format(contents[:5])
                 raise ValueError
         if self.mimetype == 'image/jpeg':
             if contents[:3] == '\xff\xd8\xff':
                 return True
             else:
-                print "Bad JPEG: ", contents[:3].encode('hex')
+                print u"Bad JPEG: {0}".format(contents[:3].encode('hex'))
                 raise ValueError()
         return False
 
@@ -435,36 +589,44 @@ class KoboFile(object):
             contents = contents[:-padding]
         return contents
 
-if __name__ == '__main__':
+def cli_main():
+    description = __about__
+    epilog = u"Parsing of arguments failed."
+    parser = argparse.ArgumentParser(prog=sys.argv[0], description=description, epilog=epilog)
+    parser.add_argument('--devicedir', default='/media/KOBOeReader', help="directory of connected Kobo device")
+    args = vars(parser.parse_args())
+    serials = []
+    devicedir = u""
+    if args['devicedir']:
+        devicedir = args['devicedir']
 
-    lib = KoboLibrary()
+    lib = KoboLibrary(serials, devicedir)
 
     for i, book in enumerate(lib.books):
-        print ('%d: %s' % (i + 1, book.title)).encode('ascii', 'ignore')
+        print u"{0}: {1}".format(i + 1, book.title)
 
-    num_string = raw_input("Convert book number... ")
+    num_string = raw_input(u"Convert book number... ")
     try:
         num = int(num_string)
         book = lib.books[num - 1]
     except (ValueError, IndexError):
         exit()
 
-    print "Converting", book.title
+    print u"Converting {0}".format(book.title)
 
     zin = zipfile.ZipFile(book.filename, "r")
     # make filename out of Unicode alphanumeric and whitespace equivalents from title
-    outname = "%s.epub" % (re.sub('[^\s\w]', '', book.title, 0, re.UNICODE))
+    outname = u"{0}.epub".format(re.sub('[^\s\w]', '_', book.title, 0, re.UNICODE))
 
     if (book.type == 'drm-free'):
-        print "DRM-free book, conversion is not needed"
+        print u"DRM-free book, conversion is not needed"
         shutil.copyfile(book.filename, outname)
-        print "Book saved as", os.path.join(os.getcwd(), outname)
+        print u"Book saved as {0}".format(os.path.join(os.getcwd(), outname))
         exit(0)
 
     result = 1
     for userkey in lib.userkeys:
-        # print "Trying key: ",userkey.encode('hex_codec')
-        confirmedGood = False
+        print u"Trying key: {0}".format(userkey.encode('hex_codec'))
         try:
             zout = zipfile.ZipFile(outname, "w", zipfile.ZIP_DEFLATED)
             for filename in zin.namelist():
@@ -473,18 +635,25 @@ if __name__ == '__main__':
                     file = book.encryptedfiles[filename]
                     contents = file.decrypt(userkey, contents)
                     # Parse failures mean the key is probably wrong.
-                    if not confirmedGood:
-                        confirmedGood = file.check(contents)
+                    file.check(contents)
                 zout.writestr(filename, contents)
             zout.close()
-            print "Book saved as", os.path.join(os.getcwd(), outname)
+            print u"Decryption succeeded."
+            print u"Book saved as {0}".format(os.path.join(os.getcwd(), outname))
             result = 0
             break
         except ValueError:
-            print "Decryption failed, trying next key"
+            print u"Decryption failed."
             zout.close()
             os.remove(outname)
 
     zin.close()
     lib.close()
-    exit(result)
+    if result != 0:
+        print u"Could not decrypt book with any of the keys found."
+    return result
+
+if __name__ == '__main__':
+    sys.stdout=SafeUnbuffered(sys.stdout)
+    sys.stderr=SafeUnbuffered(sys.stderr)
+    sys.exit(cli_main())
